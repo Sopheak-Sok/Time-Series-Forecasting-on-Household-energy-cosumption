@@ -1,0 +1,386 @@
+---
+output:
+  pdf_document: default
+  html_document: default
+---
+##############################################################
+# 
+# Load libraries
+#
+##############################################################
+```{r}
+# Clear all variables in the workplace
+rm(list=ls())
+
+# Load the forecasting package
+library(fpp2)
+library(pacman)
+
+p_load(tidyverse, lubridate, stringr, scales, cowplot, dygraphs, xts, imputeTS, forecast, zoo, fma, expsmooth, fpp2, doParallel)
+```
+# Load Data
+```{r}
+path <- "D:/An I5/TSA/Mini Project/Code/household_power_consumption.txt"
+
+# Import the data
+data <- read_delim(path, ";", escape_double = FALSE, trim_ws = TRUE)
+
+```
+#############################################
+# Data preprocessing
+#############################################
+```{r}
+# Convert the Date column to Date type
+data <- data %>%
+  mutate(Date = dmy(Date))  # Assuming the format is Day-Month-Year
+
+# Convert Time column to proper time format (if needed)
+data <- data %>%
+  mutate(Time = hms(Time))  # Requires lubridate for parsing time
+```
+
+# Handling Invalid and Missing Values
+## Replace invalid by NA 
+## Replace NA by mean
+```{r}
+# Check for problematic rows in all columns
+invalid_rows <- data %>%
+  filter(!str_detect(Global_active_power, "^\\d+(\\.\\d+)?$") |
+           !str_detect(Global_reactive_power, "^\\d+(\\.\\d+)?$") |
+           !str_detect(Voltage, "^\\d+(\\.\\d+)?$") |
+           !str_detect(Global_intensity, "^\\d+(\\.\\d+)?$") |
+           !str_detect(Sub_metering_1, "^\\d+(\\.\\d+)?$") |
+           !str_detect(Sub_metering_2, "^\\d+(\\.\\d+)?$") |
+           !str_detect(Sub_metering_3, "^\\d+(\\.\\d+)?$"))
+
+print(invalid_rows)
+
+# Replace invalid values with NA for numeric columns
+data <- data %>%
+  mutate_at(vars(Global_active_power, Global_reactive_power, Voltage, 
+                 Global_intensity, Sub_metering_1, Sub_metering_2, Sub_metering_3), 
+            ~ ifelse(str_detect(., "^\\d+(\\.\\d+)?$"), as.numeric(.), NA))
+
+# Replace NA with column mean
+data <- data %>%
+  mutate_at(vars(Global_active_power, Global_reactive_power, Voltage, 
+                 Global_intensity, Sub_metering_1, Sub_metering_2, Sub_metering_3), 
+            ~ replace(., is.na(.), mean(., na.rm = TRUE)))
+
+```
+# Convert character columns to numeric
+```{r}
+# Combine Date and Time into a single Datetime column
+data <- data %>%
+  mutate(Datetime = as.POSIXct(paste(Date, Time)))
+
+# Convert character columns to numeric
+data <- data %>%
+  mutate_at(vars(Global_active_power, Global_reactive_power, Voltage, 
+                 Global_intensity, Sub_metering_1, Sub_metering_2), 
+            ~ as.numeric(.))
+```
+
+# View Data
+```{r}
+# Display the structure of the dataset
+print(str(data))
+
+# Display a summary of the dataset
+print(summary(data))
+
+# Count missing values in each column
+print(colSums(is.na(data)))
+```
+
+###################################################
+# Explore Global Active Power (GAP)
+###################################################
+```{r}
+# select datetime and Global
+gap_data <- data %>%
+  select(Date, Time, Datetime, Global_active_power)
+
+# Display structure and summary
+str(gap_data)
+summary(gap_data)
+colSums(is.na(gap_data))
+```
+# Visualization
+```{r}
+# Load necessary libraries
+library(ggplot2)
+
+# Histogram of Global_active_power
+ggplot(gap_data, aes(x = Global_active_power)) +
+  geom_histogram(binwidth = 0.1, fill = "blue", color = "black") +
+  labs(title = "Distribution of Global Active Power", x = "Global Active Power (kW)", y = "Frequency")
+
+# Boxplot of Global_active_power to check for outliers
+ggplot(gap_data, aes(y = Global_active_power)) +
+  geom_boxplot(fill = "blue", color = "black") +
+  labs(title = "Boxplot of Global Active Power", y = "Global Active Power (kW)")
+
+# Time series plot of Global_active_power over time
+ggplot(gap_data, aes(x = Datetime, y = Global_active_power)) +
+  geom_line(color = "blue") +
+  labs(title = "Global Active Power over Time", x = "Datetime", y = "Global Active Power (kW)")
+```
+# Remove outlier
+```{r}
+# Function to remove rows with outliers in a column
+remove_outliers_from_df <- function(df, column_name) {
+  # Calculate the IQR
+  IQR_value <- IQR(df[[column_name]], na.rm = TRUE)
+  Q1 <- quantile(df[[column_name]], 0.25, na.rm = TRUE)
+  Q3 <- quantile(df[[column_name]], 0.75, na.rm = TRUE)
+  
+  # Define lower and upper bounds for outliers
+  lower_bound <- Q1 - 1.5 * IQR_value
+  upper_bound <- Q3 + 1.5 * IQR_value
+  
+  # Filter the data frame to keep only rows within bounds
+  df <- df[df[[column_name]] >= lower_bound & df[[column_name]] <= upper_bound, ]
+  
+  return(df)
+}
+
+
+
+# gap_data1 <- gap_data
+# Apply the function to the entire data frame for the specified column
+gap_data <- remove_outliers_from_df(gap_data, "Global_active_power")
+```
+# Visualize again
+```{r visualize-gap}
+# Load necessary libraries
+library(ggplot2)
+
+# Histogram for Global_active_power
+ggplot(gap_data, aes(x = Global_active_power)) +
+  geom_histogram(binwidth = 0.1, fill = "skyblue", color = "black") +
+  labs(title = "Histogram of Global Active Power", x = "Global Active Power", y = "Frequency") +
+  theme_minimal()
+
+# Box plot for Global_active_power
+ggplot(gap_data, aes(y = Global_active_power)) +
+  geom_boxplot(fill = "lightgreen", color = "black") +
+  labs(title = "Box Plot of Global Active Power", y = "Global Active Power") +
+  theme_minimal()
+
+# Time series plot for Global_active_power over time
+ggplot(gap_data, aes(x = Datetime, y = Global_active_power)) +
+  geom_line(color = "blue") +
+  labs(title = "Time Series of Global Active Power", x = "Datetime", y = "Global Active Power") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+```{r aggregate-gap}
+library(dplyr)
+library(ggplot2)
+library(lubridate)
+
+# Assuming `gap_data` has a "Date" column in Date format and "Global_active_power" column
+
+# 1. Aggregate data to daily level
+daily_gap_data <- gap_data %>%
+  group_by(Date) %>%
+  summarise(Daily_Avg = mean(Global_active_power, na.rm = TRUE))
+
+# Convert to a daily time series
+daily_ts <- ts(daily_gap_data$Daily_Avg, start = c(2007, 1), frequency = 365)
+
+# 2. Aggregate data to weekly level
+weekly_data <- daily_gap_data %>%
+  mutate(Week = floor_date(Date, unit = "week")) %>%
+  group_by(Week) %>%
+  summarise(Weekly_Avg = mean(Daily_Avg, na.rm = TRUE))
+
+# Convert to a weekly time series
+weekly_ts <- ts(weekly_data$Weekly_Avg, start = c(2007, 1), frequency = 52)
+
+# 3. Aggregate data to monthly level
+monthly_data <- daily_gap_data %>%
+  mutate(Month = floor_date(Date, unit = "month")) %>%
+  group_by(Month) %>%
+  summarise(Monthly_Avg = mean(Daily_Avg, na.rm = TRUE))
+
+# Convert to a monthly time series
+monthly_ts <- ts(monthly_data$Monthly_Avg, start = c(2007, 1), frequency = 12)
+
+# 4. Aggregate data to quarterly level
+quarterly_data <- daily_gap_data %>%
+  mutate(Quarter = paste0(year(Date), " Q", quarter(Date))) %>%
+  group_by(Quarter) %>%
+  summarise(Quarterly_Avg = mean(Daily_Avg, na.rm = TRUE))
+
+# Convert to a quarterly time series
+quarterly_ts <- ts(quarterly_data$Quarterly_Avg, start = c(2007, 1), frequency = 4)
+
+# 5. Plotting examples
+# Daily Plot
+ggplot(daily_gap_data, aes(x = Date, y = Daily_Avg)) +
+  geom_line(color = "blue") +
+  labs(title = "Daily Average Global Active Power", x = "Date", y = "Average Global Active Power (kW)")
+
+# Weekly Plot
+ggplot(weekly_data, aes(x = Week, y = Weekly_Avg)) +
+  geom_line(color = "green") +
+  labs(title = "Weekly Average Global Active Power", x = "Week", y = "Average Global Active Power (kW)")
+
+# Monthly Plot
+ggplot(monthly_data, aes(x = Month, y = Monthly_Avg)) +
+  geom_line(color = "red") +
+  labs(title = "Monthly Average Global Active Power", x = "Month", y = "Average Global Active Power (kW)")
+
+
+```
+
+
+
+###################################################################
+# Daily time series decomposed (time plot, trend, season, error)
+###################################################################
+```{r}
+library(dplyr)
+Y <- monthly_ts
+
+# Decompose the quarterly time series
+decomposed_Y <- decompose(Y, type = "additive")
+
+# Plot the decomposition
+plot(decomposed_Y)
+
+```
+# Box plot
+```{r}
+boxplot(Y, main = "Boxplot of Global Active Power", ylab = "Global Active Power")
+Q1 <- quantile(Y, 0.25)
+Q3 <- quantile(Y, 0.75)
+IQR <- Q3 - Q1
+lower_bound <- Q1 - 1.5 * IQR
+upper_bound <- Q3 + 1.5 * IQR
+outliers <- Y[Y < lower_bound | Y > upper_bound]
+print(outliers)
+```
+```{r}
+DY <- diff(Y)
+
+autoplot(DY) +
+  ggtitle(" Time Plot")
+  ylab("KW")
+  
+
+ggseasonplot(DY) +
+  ggtitle("Season Plot")
+  ylab("KW")
+  
+ggsubseriesplot(DY)
+```
+```{r}
+if (!require(tseries)) install.packages("tseries")
+library(tseries)
+adf_test <- adf.test(DY)
+print(adf_test)
+```
+```{r}
+# we can use Y instead of DY in auto.arima
+fit_arima <- auto.arima(Y, stepwise = FALSE, approximation = FALSE, trace=TRUE)
+print(summary(fit_arima))
+checkresiduals(fit_arima)
+
+# ACF of residuals (manually if you want more control)
+acf(residuals(fit_arima), main = "ACF of ARIMA Residuals")
+
+# Histogram of residuals
+hist(residuals(fit_arima), main = "Histogram of ARIMA Residuals", xlab = "Residuals", breaks = 30)
+
+# QQ-plot of residuals
+qqnorm(residuals(fit_arima))
+qqline(residuals(fit_arima), col = "red")
+
+# Ljung-Box test to check for autocorrelation in residuals
+Box.test(residuals(fit_arima), lag = 20, type = "Ljung-Box")
+### arima(2,1,3) SD^2 = 0.09049 SD=0.3008156
+```
+# Daily Forecasting
+```{r}
+fcst <- forecast(fit_arima, h=63)
+autoplot(fcst, include=1095)
+```
+```{r}
+# Fit ARIMA model
+# fit_arima <- auto.arima(Y, stepwise = FALSE, approximation = FALSE, trace = TRUE)
+
+# Print ARIMA model summary
+print(summary(fit_arima))
+
+# Check residual diagnostics
+checkresiduals(fit_arima)
+
+# ACF of residuals
+acf(residuals(fit_arima), main = "ACF of ARIMA Residuals")
+
+# Histogram of residuals
+hist(residuals(fit_arima), 
+     main = "Histogram of ARIMA Residuals", 
+     xlab = "Residuals", 
+     breaks = 30, 
+     col = "lightblue", 
+     border = "black")
+
+# QQ-plot of residuals
+qqnorm(residuals(fit_arima), main = "QQ-Plot of ARIMA Residuals")
+qqline(residuals(fit_arima), col = "red")
+
+# Ljung-Box test for autocorrelation in residuals
+box_test <- Box.test(residuals(fit_arima), lag = 20, type = "Ljung-Box")
+print(box_test)
+
+# Shapiro-Wilk test for normality of residuals
+shapiro_test <- shapiro.test(residuals(fit_arima))
+print(shapiro_test)
+
+# Jarque-Bera test for normality of residuals
+if (!require(tseries)) install.packages("tseries")
+library(tseries)
+jarque_bera_test <- jarque.bera.test(residuals(fit_arima))
+print(jarque_bera_test)
+
+# Runs Test for randomness of residuals
+if (!require(randtests)) install.packages("randtests")
+library(randtests)
+runs_test <- runs.test(residuals(fit_arima))
+print(runs_test)
+
+# Calculate variance and standard deviation of residuals
+residual_variance <- var(residuals(fit_arima))
+residual_sd <- sqrt(residual_variance)
+cat("Residual Variance:", residual_variance, "\n")
+cat("Residual Standard Deviation:", residual_sd, "\n")
+
+```
+Interpretation of Diagnostic Tests:
+Box-Ljung Test:
+
+X-squared = 12.886, df = 20, p-value = 0.8822
+Interpretation: The high p-value (> 0.05) suggests that there is no significant autocorrelation in the residuals. This is a good sign, as it indicates that the ARIMA model has captured the time series' patterns effectively.
+Shapiro-Wilk Normality Test:
+
+W = 0.87703, p-value = 0.0001235
+Interpretation: The low p-value (< 0.05) indicates that the residuals deviate significantly from a normal distribution. This suggests that the residuals may not be normally distributed, which might affect the validity of statistical inferences based on the model.
+Jarque-Bera Test:
+
+X-squared = 44.074, df = 2, p-value = 2.688e-10
+Interpretation: The extremely low p-value (< 0.05) confirms that the residuals are not normally distributed. This aligns with the result of the Shapiro-Wilk test. The non-normality may be due to skewness, kurtosis, or other distributional characteristics.
+Runs Test:
+
+Statistic = -3.5016, p-value = 0.0004626
+Interpretation: The low p-value (< 0.05) indicates non-randomness in the residuals. This suggests that there may be patterns left in the residuals that the model has not captured, implying the ARIMA model may need improvement or adjustments.
+Residual Variance and Standard Deviation:
+
+Residual Variance = 0.0091
+Residual Standard Deviation = 0.0956
+Interpretation: The residual variance and standard deviation indicate the average dispersion of the residuals. While these values are relatively low, the presence of non-randomness and non-normality suggests further refinement of the model may be required.
+
+
